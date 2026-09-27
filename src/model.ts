@@ -33,6 +33,16 @@ export interface ViewState {
   compareOpen: boolean;
   notice: string;
   error: string | null;
+  pendingImport: PendingImport | null;
+}
+
+export interface PendingImport {
+  imageName: string;
+  variants: number;
+  guidesEnabled: number;
+  hasSubject: boolean;
+  exportedAt: string;
+  replacing: boolean;
 }
 
 export const DEFAULT_CROP: CropVariant = {

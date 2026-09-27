@@ -3,12 +3,15 @@ import type { GuideKey, Ratio } from '../model';
 interface ToolbarProps {
   guides: Record<GuideKey, boolean>;
   ratio: string;
+  hasDocument: boolean;
   onImport: (file: File) => void;
   onDemo: () => void;
   onToggleGuide: (guide: GuideKey) => void;
   onRatio: (ratio: Ratio) => void;
   onCompare: () => void;
   compareOpen: boolean;
+  onExportWorkspace: () => void;
+  onImportWorkspace: (file: File) => void;
 }
 
 const guideLabels: Array<[GuideKey, string, string]> = [
@@ -48,6 +51,18 @@ export function Toolbar(props: ToolbarProps) {
       </div>
 
       <button className={`compare-button ${props.compareOpen ? 'active' : ''}`} onClick={props.onCompare}><span>◫</span> {props.compareOpen ? '返回工作台' : '打开前后对比'}</button>
+
+      <div className="control-group workspace-file-group">
+        <div className="section-label"><span>工作台文件</span><small>TRANSFER</small></div>
+        <button className="workspace-button primary" onClick={props.onExportWorkspace} disabled={!props.hasDocument} title={props.hasDocument ? '导出当前工作台' : '载入图片后才能导出'}>
+          <span>↥</span> 导出工作台
+        </button>
+        <label className={`workspace-button ${props.hasDocument ? 'warn' : ''}`}>
+          <span>↧</span> 导入工作台
+          <input type="file" accept=".framesense.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) props.onImportWorkspace(file); event.target.value = ''; }} />
+        </label>
+        <small className="workspace-file-hint">文件包含图片、辅助层、主体与裁切方案，可在其他设备还原。</small>
+      </div>
     </aside>
   );
 }

@@ -1,22 +1,25 @@
 import { useEffect, useState } from 'react';
 import { CanvasStage } from './components/CanvasStage';
 import { EmptyState } from './components/EmptyState';
+import { ImportConflictDialog } from './components/ImportConflictDialog';
 import { Toolbar } from './components/Toolbar';
 import { VariantList } from './components/VariantList';
 import { LocalFrameRepository } from './repository';
-import { BrowserImageService, BrowserStorageService } from './service';
+import { BrowserImageService, BrowserStorageService, BrowserWorkspaceFileService } from './service';
 import type { CropVariant, ImageAsset, Ratio } from './model';
 import { useFrameSenseViewModel } from './viewModel';
 
 const repository = new LocalFrameRepository(new BrowserStorageService());
 const imageService = new BrowserImageService();
+const workspaceFileService = new BrowserWorkspaceFileService();
 
 export default function App() {
-  const [viewModel, state] = useFrameSenseViewModel(repository, imageService);
+  const [viewModel, state] = useFrameSenseViewModel(repository, imageService, workspaceFileService);
   const [showInfo, setShowInfo] = useState(false);
   useEffect(() => { void viewModel.initialize(); }, [viewModel]);
   const { document } = state;
   const handleImport = (file: File) => { void viewModel.importImage(file); };
+  const handleImportWorkspace = (file: File) => { void viewModel.importWorkspaceFile(file); };
 
   return (
     <div className="app-shell">
@@ -26,7 +29,7 @@ export default function App() {
       </header>
       {showInfo && <div className="info-popover"><strong>FrameSense</strong><p>把构图规则变成可以移动、比较和保存的辅助层。所有图片只在本地处理。</p></div>}
       <main className="workspace">
-        <Toolbar guides={document.guides} ratio={document.crop.ratio} onImport={handleImport} onDemo={() => viewModel.loadDemo()} onToggleGuide={(guide) => viewModel.toggleGuide(guide)} onRatio={(ratio: Ratio) => viewModel.setRatio(ratio)} onCompare={() => viewModel.toggleCompare()} compareOpen={state.compareOpen} />
+        <Toolbar guides={document.guides} ratio={document.crop.ratio} hasDocument={document.image !== null} onImport={handleImport} onDemo={() => viewModel.loadDemo()} onToggleGuide={(guide) => viewModel.toggleGuide(guide)} onRatio={(ratio: Ratio) => viewModel.setRatio(ratio)} onCompare={() => viewModel.toggleCompare()} compareOpen={state.compareOpen} onExportWorkspace={() => { void viewModel.exportWorkspace(); }} onImportWorkspace={handleImportWorkspace} />
         <section className="work-area">
           <div className="work-heading"><div><p className="eyebrow">WORKSPACE / {document.image ? 'EDITING' : 'READY'}</p><h1>{document.image ? document.image.name : '构图工作台'}</h1></div><div className="notice" role="status">{state.error ?? state.notice}</div></div>
           {!document.image ? <EmptyState onDemo={() => viewModel.loadDemo()} /> : state.compareOpen ? <Comparison image={document.image} variants={document.variants} /> : <CanvasStage image={document.image} guides={document.guides} crop={document.crop} subject={document.subject} onSubject={(x, y) => viewModel.markSubject(x, y)} onMoveCrop={(dx, dy) => viewModel.moveCrop(dx, dy)} onResizeCrop={(width, height) => viewModel.resizeCrop(width, height)} />}
@@ -34,7 +37,10 @@ export default function App() {
         </section>
         {document.image && <VariantList variants={document.variants} image={document.image} current={document.crop} onSave={() => viewModel.saveVariant()} onSelect={(id) => viewModel.selectVariant(id)} />}
       </main>
-      <footer className="footer"><span>FrameSense · 原图不会被修改</span><span>本地自动保存 · {document.variants.length}/8 方案</span></footer>
+      <footer className="footer"><span>FrameSense · 原图不会被修改</span><span>本地自动保存 · {document.variants.length}/8 方案 · 可导出文件转移工作台</span></footer>
+      {state.pendingImport && document.image && (
+        <ImportConflictDialog pending={state.pendingImport} currentImageName={document.image.name} onConfirm={() => viewModel.confirmWorkspaceImport()} onCancel={() => viewModel.cancelWorkspaceImport()} />
+      )}
     </div>
   );
 }

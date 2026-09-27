@@ -2,15 +2,22 @@ import { useState, useSyncExternalStore } from 'react';
 import { cropForRatio, makeVariant, moveCrop, resizeCrop } from './domain';
 import { EMPTY_DOCUMENT, type FrameDocument, type GuideKey, type Ratio, type ViewState } from './model';
 import type { FrameRepository } from './repository';
-import type { ImageService } from './service';
+import type { ImageService, WorkspaceFileService } from './service';
+import { parseWorkspaceFile, serializeWorkspace, workspaceFileName } from './transfer';
 
 type Listener = () => void;
 
 export class FrameSenseViewModel {
-  private state: ViewState = { phase: 'loading', document: structuredClone(EMPTY_DOCUMENT), compareOpen: false, notice: '', error: null };
+  private state: ViewState = { phase: 'loading', document: structuredClone(EMPTY_DOCUMENT), compareOpen: false, notice: '', error: null, pendingImport: null };
   private readonly listeners = new Set<Listener>();
+  // 待确认的导入文档只存在这里；用户确认前不会进入 state，更不会写进存储。
+  private pendingDocument: FrameDocument | null = null;
 
-  constructor(private readonly repository: FrameRepository, private readonly imageService: ImageService) {}
+  constructor(
+    private readonly repository: FrameRepository,
+    private readonly imageService: ImageService,
+    private readonly fileService: WorkspaceFileService,
+  ) {}
 
   getSnapshot = (): ViewState => this.state;
 
@@ -98,10 +105,82 @@ export class FrameSenseViewModel {
   toggleCompare(): void {
     this.patch({ compareOpen: !this.state.compareOpen });
   }
+
+  async exportWorkspace(): Promise<void> {
+    if (!this.state.document.image) return;
+    this.patch({ notice: '正在导出工作台文件…', error: null });
+    try {
+      const contents = await serializeWorkspace(this.state.document);
+      await this.fileService.save(workspaceFileName(), contents);
+      this.patch({ notice: '工作台已导出为文件，可发送给他人或在其他设备上导入还原。' });
+    } catch (error) {
+      this.patch({ error: error instanceof Error ? error.message : '工作台导出失败，请稍后重试。' });
+    }
+  }
+
+  async importWorkspaceFile(file: File): Promise<void> {
+    if (this.pendingDocument) return;
+    this.patch({ phase: 'loading', notice: '正在核验工作台文件…', error: null });
+    let text: string;
+    try {
+      text = await this.fileService.read(file);
+    } catch {
+      this.restorePhase('文件读取失败，浏览器无法访问该文件，请重试。');
+      return;
+    }
+    try {
+      const result = await parseWorkspaceFile(text);
+      if (!result.ok) {
+        // 校验失败：明确报错，工作台与存储一律不动。
+        this.restorePhase(result.message);
+        return;
+      }
+      const { document, summary } = result;
+      if (!this.state.document.image) {
+        this.persist(document, '工作台已从文件还原。');
+        return;
+      }
+      // 当前已有内容：先停下来让用户确认冲突如何处理，不直接覆盖。
+      this.pendingDocument = document;
+      this.patch({
+        phase: 'editing',
+        error: null,
+        notice: '已读取工作台文件，请确认是否用文件内容替换当前工作台。',
+        pendingImport: {
+          imageName: summary.imageName,
+          variants: summary.variants,
+          guidesEnabled: summary.guidesEnabled,
+          hasSubject: summary.hasSubject,
+          exportedAt: summary.exportedAt,
+          replacing: true,
+        },
+      });
+    } catch {
+      this.restorePhase('当前环境无法完成文件校验（可能需要在 HTTPS 下打开页面），已取消导入。');
+    }
+  }
+
+  confirmWorkspaceImport(): void {
+    const incoming = this.pendingDocument;
+    if (!incoming) return;
+    this.pendingDocument = null;
+    this.patch({ pendingImport: null });
+    this.persist(incoming, '工作台已从文件还原，之前的内容已被文件中的版本替换。');
+  }
+
+  cancelWorkspaceImport(): void {
+    if (!this.pendingDocument) return;
+    this.pendingDocument = null;
+    this.patch({ pendingImport: null, phase: 'editing', notice: '已取消导入，当前工作台保持不变。' });
+  }
+
+  private restorePhase(message: string): void {
+    this.patch({ phase: this.state.document.image ? 'editing' : 'ready', error: message });
+  }
 }
 
-export function useFrameSenseViewModel(repository: FrameRepository, imageService: ImageService): [FrameSenseViewModel, ViewState] {
-  const [viewModel] = useState(() => new FrameSenseViewModel(repository, imageService));
+export function useFrameSenseViewModel(repository: FrameRepository, imageService: ImageService, fileService: WorkspaceFileService): [FrameSenseViewModel, ViewState] {
+  const [viewModel] = useState(() => new FrameSenseViewModel(repository, imageService, fileService));
   const state = useSyncExternalStore(viewModel.subscribe, viewModel.getSnapshot, viewModel.getSnapshot);
   return [viewModel, state];
 }

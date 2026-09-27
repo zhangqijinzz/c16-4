@@ -22,6 +22,29 @@ export interface ImageService {
   demo(): ImageAsset;
 }
 
+export interface WorkspaceFileService {
+  save(name: string, contents: string): Promise<void>;
+  read(file: File): Promise<string>;
+}
+
+export class BrowserWorkspaceFileService implements WorkspaceFileService {
+  async save(name: string, contents: string): Promise<void> {
+    const blob = new Blob([contents], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = name;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  read(file: File): Promise<string> {
+    return file.text();
+  }
+}
+
 export class BrowserImageService implements ImageService {
   readFile(file: File): Promise<ImageAsset> {
     return new Promise((resolve, reject) => {
