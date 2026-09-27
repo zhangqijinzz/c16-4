@@ -33,6 +33,15 @@ export interface ViewState {
   compareOpen: boolean;
   notice: string;
   error: string | null;
+  /** 待用户确认的导入；为空表示当前没有待处理的导入。 */
+  pendingImport: PendingImport | null;
+}
+
+/** 校验通过、等待用户确认是否替换当前工作区的导入内容。 */
+export interface PendingImport {
+  document: FrameDocument;
+  fileName: string;
+  exportedAt: string | null;
 }
 
 export const DEFAULT_CROP: CropVariant = {

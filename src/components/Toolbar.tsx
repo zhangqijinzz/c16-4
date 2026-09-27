@@ -3,12 +3,15 @@ import type { GuideKey, Ratio } from '../model';
 interface ToolbarProps {
   guides: Record<GuideKey, boolean>;
   ratio: string;
+  hasImage: boolean;
   onImport: (file: File) => void;
   onDemo: () => void;
   onToggleGuide: (guide: GuideKey) => void;
   onRatio: (ratio: Ratio) => void;
   onCompare: () => void;
   compareOpen: boolean;
+  onExportWorkspace: () => void;
+  onImportWorkspace: (file: File) => void;
 }
 
 const guideLabels: Array<[GuideKey, string, string]> = [
@@ -47,7 +50,17 @@ export function Toolbar(props: ToolbarProps) {
         </div>
       </div>
 
-      <button className={`compare-button ${props.compareOpen ? 'active' : ''}`} onClick={props.onCompare}><span>◫</span> {props.compareOpen ? '返回工作台' : '打开前后对比'}</button>
+      <button className={`compare-button ${props.compareOpen ? 'active' : ''}`} onClick={props.onCompare} disabled={!props.hasImage}><span>◫</span> {props.compareOpen ? '返回工作台' : '打开前后对比'}</button>
+
+      <div className="control-group workspace-transfer">
+        <div className="section-label"><span>工作区文件</span><small>BACKUP</small></div>
+        <button className="export-button" onClick={props.onExportWorkspace} disabled={!props.hasImage} title={props.hasImage ? '导出当前构图为文件' : '先载入图片后才能导出'}><span>↗</span> 导出工作区</button>
+        <label className="import-workspace-button">
+          <span>↙</span> 导入工作区
+          <input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) props.onImportWorkspace(file); event.target.value = ''; }} />
+        </label>
+        <p className="transfer-hint">文件包含图片、辅助层、主体与裁切方案，可在其它设备还原。</p>
+      </div>
     </aside>
   );
 }

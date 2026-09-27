@@ -1,16 +1,41 @@
 import { useState, useSyncExternalStore } from 'react';
 import { cropForRatio, makeVariant, moveCrop, resizeCrop } from './domain';
-import { EMPTY_DOCUMENT, type FrameDocument, type GuideKey, type Ratio, type ViewState } from './model';
+import { EMPTY_DOCUMENT, type FrameDocument, type GuideKey, type PendingImport, type Ratio, type ViewState } from './model';
 import type { FrameRepository } from './repository';
 import type { ImageService } from './service';
+import {
+  MAX_IMPORT_BYTES,
+  exportFileName,
+  parseWorkspace,
+  serializeWorkspace,
+  type ChecksumService,
+  type FileTransferService,
+  type TransferFailureReason,
+} from './transfer';
 
 type Listener = () => void;
 
+const IMPORT_ERROR_MESSAGES: Record<TransferFailureReason, string> = {
+  'too-large': '文件超过 30MB 上限，无法导入。',
+  'not-json': '这不是有效的 JSON 文件，请确认选择的是 FrameSense 导出的工作区文件。',
+  'not-envelope': '文件不是 FrameSense 工作区导出文件，当前工作区保持不变。',
+  'future-version': '该文件由更新版本的 FrameSense 导出，当前版本无法读取，请升级后再试。',
+  'checksum-mismatch': '文件校验未通过，可能已损坏或被修改过，当前工作区保持不变。',
+  'invalid-document': '文件内容结构不完整或含非法数据，当前工作区保持不变。',
+  'empty-document': '文件里没有任何图片与构图内容，无法导入。',
+};
+
 export class FrameSenseViewModel {
-  private state: ViewState = { phase: 'loading', document: structuredClone(EMPTY_DOCUMENT), compareOpen: false, notice: '', error: null };
+  private state: ViewState = { phase: 'loading', document: structuredClone(EMPTY_DOCUMENT), compareOpen: false, notice: '', error: null, pendingImport: null };
   private readonly listeners = new Set<Listener>();
 
-  constructor(private readonly repository: FrameRepository, private readonly imageService: ImageService) {}
+  constructor(
+    private readonly repository: FrameRepository,
+    private readonly imageService: ImageService,
+    private readonly transferFiles: FileTransferService,
+    private readonly checksum: ChecksumService,
+    private readonly appVersion = '1.0.0',
+  ) {}
 
   getSnapshot = (): ViewState => this.state;
 
@@ -98,10 +123,89 @@ export class FrameSenseViewModel {
   toggleCompare(): void {
     this.patch({ compareOpen: !this.state.compareOpen });
   }
+
+  /** 导出当前工作区为自包含文件（图片以 data URL 内嵌）。 */
+  async exportWorkspace(): Promise<void> {
+    if (!this.state.document.image) return;
+    this.patch({ notice: '正在导出工作区文件…', error: null });
+    try {
+      const exportedAt = new Date();
+      const content = await serializeWorkspace(this.state.document, this.checksum, this.appVersion, exportedAt);
+      this.transferFiles.download(exportFileName(exportedAt), content);
+      this.patch({ notice: `工作区已导出（${exportedAt.toLocaleDateString()} 的构图状态），可在其它设备上导入还原。` });
+    } catch {
+      this.patch({ phase: 'error', error: '工作区导出失败，请重试。' });
+    }
+  }
+
+  /**
+   * 读取并校验不可信来源的工作区文件。校验失败：明确报错且不碰当前工作区；
+   * 校验成功且当前已有内容：挂起待确认，由用户决定是否整体替换。
+   */
+  async importWorkspace(file: File): Promise<void> {
+    if (this.state.pendingImport) return;
+    if (file.size > MAX_IMPORT_BYTES) {
+      this.patch({ error: IMPORT_ERROR_MESSAGES['too-large'], notice: '导入已取消，当前工作区保持不变。' });
+      return;
+    }
+    this.patch({ phase: 'loading', notice: '正在校验工作区文件…', error: null });
+    let text: string;
+    try {
+      text = await this.transferFiles.read(file);
+    } catch {
+      this.patch({ phase: this.state.document.image ? 'editing' : 'ready', error: '文件读取失败，请重试。' });
+      return;
+    }
+    let result;
+    try {
+      result = await parseWorkspace(text, this.checksum);
+    } catch {
+      result = { ok: false as const, reason: 'not-json' as const };
+    }
+    if (!result.ok) {
+      this.patch({
+        phase: this.state.document.image ? 'editing' : 'ready',
+        error: IMPORT_ERROR_MESSAGES[result.reason],
+        notice: '导入已取消，当前工作区保持不变。',
+      });
+      return;
+    }
+
+    const pending: PendingImport = { document: result.document, fileName: file.name, exportedAt: result.exportedAt };
+    if (this.state.document.image) {
+      // 有未保存/正在编辑的内容：先讲清冲突处理方式，等待用户确认，不直接覆盖。
+      this.patch({ phase: 'editing', pendingImport: pending, notice: '已读取工作区文件，等待确认是否替换当前内容。', error: null });
+    } else {
+      this.applyPendingImport(pending, '工作区已导入，构图状态已还原。');
+    }
+  }
+
+  /** 用户在冲突对话框中确认：整体替换为导入的工作区。 */
+  confirmImport(): void {
+    const pending = this.state.pendingImport;
+    if (!pending) return;
+    this.applyPendingImport(pending, `已导入「${pending.fileName}」，工作台还原为导出当天的样子。`);
+  }
+
+  /** 用户取消导入：关闭对话框，当前工作区原样保留。 */
+  cancelImport(): void {
+    if (!this.state.pendingImport) return;
+    this.patch({ pendingImport: null, notice: '已取消导入，当前工作区保持不变。' });
+  }
+
+  private applyPendingImport(pending: PendingImport, notice: string): void {
+    this.patch({ compareOpen: false, pendingImport: null });
+    this.persist(structuredClone(pending.document), notice);
+  }
 }
 
-export function useFrameSenseViewModel(repository: FrameRepository, imageService: ImageService): [FrameSenseViewModel, ViewState] {
-  const [viewModel] = useState(() => new FrameSenseViewModel(repository, imageService));
+export function useFrameSenseViewModel(
+  repository: FrameRepository,
+  imageService: ImageService,
+  transferFiles: FileTransferService,
+  checksum: ChecksumService,
+): [FrameSenseViewModel, ViewState] {
+  const [viewModel] = useState(() => new FrameSenseViewModel(repository, imageService, transferFiles, checksum));
   const state = useSyncExternalStore(viewModel.subscribe, viewModel.getSnapshot, viewModel.getSnapshot);
   return [viewModel, state];
 }
